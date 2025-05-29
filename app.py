@@ -34,20 +34,20 @@ st.sidebar.header("⚙️ Настройки генерации")
 
 # Параметры SIRDS
 dot_size = st.sidebar.slider(
-    "Размер точек паттерна",
+    "Размер элементов паттерна",
     min_value=1,
     max_value=5,
     value=2,
-    help="Размер точек в случайном паттерне"
+    help="Размер элементов в фрактальном паттерне"
 )
 
 depth_intensity = st.sidebar.slider(
-    "Интенсивность глубины",
+    "Интенсивность 3D эффекта",
     min_value=0.1,
     max_value=2.0,
-    value=1.0,
+    value=1.2,
     step=0.1,
-    help="Насколько сильно выражен 3D эффект"
+    help="Насколько выражено трёхмерное восприятие объекта"
 )
 
 pattern_width = st.sidebar.slider(

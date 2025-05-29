@@ -12,9 +12,85 @@ class SIRDSGenerator:
         """Инициализация генератора"""
         pass
     
+    def detect_edges(self, image):
+        """
+        Выделяет контуры объектов в изображении
+        
+        Args:
+            image: PIL Image объект
+            
+        Returns:
+            PIL.Image: Изображение с выделенными контурами
+        """
+        # Конвертируем в градации серого
+        grayscale = image.convert('L')
+        
+        # Применяем фильтры для выделения контуров
+        edges = grayscale.filter(ImageFilter.FIND_EDGES)
+        
+        # Усиливаем контуры
+        enhancer = ImageEnhance.Contrast(edges)
+        edges = enhancer.enhance(2.0)
+        
+        return edges
+    
+    def create_depth_from_structure(self, image):
+        """
+        Создает карту глубины на основе структуры изображения
+        
+        Args:
+            image: PIL Image объект
+            
+        Returns:
+            numpy.ndarray: Улучшенная карта глубины
+        """
+        # Получаем контуры
+        edges = self.detect_edges(image)
+        edges_array = np.array(edges)
+        
+        # Конвертируем в градации серого
+        grayscale = image.convert('L')
+        grayscale_array = np.array(grayscale)
+        
+        # Создаем базовую карту глубины
+        depth_map = 255 - grayscale_array
+        
+        # Усиливаем области с контурами
+        edge_mask = edges_array > 50
+        depth_map[edge_mask] = np.maximum(depth_map[edge_mask], 200)
+        
+        return depth_map
+    
+    def apply_morphological_operations(self, depth_map):
+        """
+        Применяет морфологические операции для улучшения формы
+        
+        Args:
+            depth_map: numpy массив с картой глубины
+            
+        Returns:
+            numpy.ndarray: Обработанная карта глубины
+        """
+        from scipy import ndimage
+        
+        # Создаем структурирующий элемент
+        kernel = np.ones((3, 3))
+        
+        # Применяем морфологическое закрытие для заполнения пробелов
+        depth_image = Image.fromarray(depth_map)
+        
+        # Применяем размытие для сглаживания
+        blurred = depth_image.filter(ImageFilter.GaussianBlur(radius=1))
+        
+        # Увеличиваем контраст
+        enhancer = ImageEnhance.Contrast(blurred)
+        enhanced = enhancer.enhance(1.3)
+        
+        return np.array(enhanced)
+    
     def image_to_depth_map(self, image):
         """
-        Преобразует изображение в карту глубины
+        Преобразует изображение в оптимизированную карту глубины для SIRDS
         
         Args:
             image: PIL Image объект
@@ -22,16 +98,19 @@ class SIRDSGenerator:
         Returns:
             numpy.ndarray: Карта глубины (значения от 0 до 255)
         """
-        # Конвертируем в градации серого
-        grayscale = image.convert('L')
+        # Создаем карту глубины на основе структуры
+        depth_map = self.create_depth_from_structure(image)
         
-        # Преобразуем в numpy массив
-        depth_map = np.array(grayscale)
+        # Применяем морфологические операции
+        depth_map = self.apply_morphological_operations(depth_map)
         
-        # Инвертируем значения (темные области = близко, светлые = далеко)
-        depth_map = 255 - depth_map
+        # Нормализуем значения
+        depth_map = depth_map.astype(np.float32)
+        depth_min, depth_max = depth_map.min(), depth_map.max()
+        if depth_max > depth_min:
+            depth_map = (depth_map - depth_min) / (depth_max - depth_min) * 255
         
-        return depth_map
+        return depth_map.astype(np.uint8)
     
     def extract_color_palette(self, image, num_colors=8):
         """
@@ -167,10 +246,40 @@ class SIRDSGenerator:
         
         return Image.fromarray(combined)
     
+    def optimize_depth_for_stereogram(self, depth_map, intensity=1.0):
+        """
+        Оптимизирует карту глубины специально для стереограмм
+        
+        Args:
+            depth_map: numpy массив с картой глубины
+            intensity: Интенсивность эффекта
+            
+        Returns:
+            numpy.ndarray: Оптимизированная карта глубины
+        """
+        # Применяем сигмоидальную функцию для улучшения контраста
+        normalized = depth_map / 255.0
+        
+        # Сигмоидальное преобразование для усиления средних тонов
+        sigmoid = 1 / (1 + np.exp(-10 * (normalized - 0.5)))
+        
+        # Применяем градиентное сглаживание для плавных переходов
+        from scipy import ndimage
+        gradient_x = ndimage.sobel(sigmoid, axis=1)
+        gradient_y = ndimage.sobel(sigmoid, axis=0)
+        gradient_magnitude = np.sqrt(gradient_x**2 + gradient_y**2)
+        
+        # Уменьшаем резкие градиенты для лучшего восприятия
+        smooth_factor = 1 - np.tanh(gradient_magnitude * 5)
+        smoothed = sigmoid * smooth_factor + ndimage.gaussian_filter(sigmoid, sigma=1) * (1 - smooth_factor)
+        
+        # Возвращаем в диапазон 0-255
+        return (smoothed * 255 * intensity).astype(np.uint8)
+
     def generate_sirds(self, input_image, dot_size=2, depth_intensity=1.0, 
                        pattern_width=100, output_width=800):
         """
-        Генерирует SIRDS стереограмму из входного изображения
+        Генерирует SIRDS стереограмму из входного изображения с оптимизированным распознаванием формы
         
         Args:
             input_image: PIL Image объект для преобразования
@@ -189,9 +298,9 @@ class SIRDSGenerator:
         # Масштабируем входное изображение
         resized_image = input_image.resize((output_width, output_height), Image.Resampling.LANCZOS)
         
-        # Создаем улучшенную карту глубины
+        # Создаем оптимизированную карту глубины для стереограмм
         depth_map = self.image_to_depth_map(resized_image)
-        depth_map = self.enhance_depth_map(depth_map, blur_radius=1)
+        depth_map = self.optimize_depth_for_stereogram(depth_map, depth_intensity)
         
         # Создаем улучшенный паттерн на основе исходного изображения
         pattern = self.create_advanced_pattern(pattern_width, output_height, resized_image, dot_size)
@@ -203,36 +312,32 @@ class SIRDSGenerator:
         # Заполняем начальный паттерн
         sirds[:, :pattern_width] = pattern_array
         
-        # Генерируем SIRDS с улучшенным алгоритмом
+        # Константы для алгоритма SIRDS
+        max_depth = 40  # Максимальное смещение в пикселях
+        eye_separation = 64  # Расстояние между глазами в пикселях
+        
+        # Генерируем SIRDS с классическим алгоритмом
         for x in range(pattern_width, output_width):
             for y in range(output_height):
-                # Получаем значение глубины (нормализованное)
+                # Получаем значение глубины
                 depth_value = depth_map[y, x] / 255.0
                 
-                # Улучшенное вычисление смещения для лучшего 3D эффекта
-                base_shift = depth_value * depth_intensity * 30
+                # Вычисляем смещение на основе глубины
+                # Используем формулу стереографического смещения
+                disparity = int(depth_value * max_depth)
                 
-                # Добавляем нелинейность для более выразительного эффекта
-                nonlinear_factor = depth_value ** 1.5
-                shift = int(base_shift * nonlinear_factor)
+                # Определяем источник пикселя
+                source_x = x - pattern_width + disparity
                 
-                # Ограничиваем смещение
-                max_shift = min(pattern_width // 2, 40)
-                shift = max(-max_shift, min(shift, max_shift))
-                
-                # Вычисляем исходную позицию с учетом смещения
-                source_x = x - pattern_width - shift
-                
-                if source_x >= 0 and source_x < output_width:
+                if source_x >= 0 and source_x < x:
                     sirds[y, x] = sirds[y, source_x]
                 else:
-                    # Используем паттерн с модификацией для лучшего качества
-                    pattern_x = (x - shift) % pattern_width
+                    # Используем базовый паттерн
+                    pattern_x = x % pattern_width
                     sirds[y, x] = pattern_array[y, pattern_x]
         
-        # Применяем легкое размытие для сглаживания артефактов
+        # Создаем финальное изображение без дополнительного размытия
         sirds_image = Image.fromarray(sirds)
-        sirds_image = sirds_image.filter(ImageFilter.GaussianBlur(radius=0.5))
         
         return sirds_image
     
