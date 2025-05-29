@@ -1,6 +1,7 @@
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter, ImageEnhance
 import random
+import math
 
 class SIRDSGenerator:
     """
@@ -32,43 +33,139 @@ class SIRDSGenerator:
         
         return depth_map
     
-    def create_random_pattern(self, width, height, dot_size=2):
+    def extract_color_palette(self, image, num_colors=8):
         """
-        Создает случайный паттерн точек
+        Извлекает основные цвета из изображения
+        
+        Args:
+            image: PIL Image объект
+            num_colors: Количество цветов для извлечения
+            
+        Returns:
+            list: Список основных цветов в формате RGB
+        """
+        # Уменьшаем изображение для ускорения обработки
+        small_image = image.resize((100, 100))
+        
+        # Квантизируем цвета
+        quantized = small_image.quantize(colors=num_colors)
+        palette = quantized.getpalette()
+        
+        # Извлекаем уникальные цвета
+        colors = []
+        for i in range(num_colors):
+            r = palette[i * 3]
+            g = palette[i * 3 + 1]
+            b = palette[i * 3 + 2]
+            colors.append((r, g, b))
+        
+        return colors
+    
+    def create_fractal_pattern(self, width, height, colors, iterations=100):
+        """
+        Создает фрактальный паттерн с использованием цветов из исходного изображения
         
         Args:
             width: Ширина паттерна
             height: Высота паттерна
-            dot_size: Размер точек
+            colors: Список цветов для использования
+            iterations: Количество итераций для фрактала
             
         Returns:
-            PIL.Image: Изображение с случайным паттерном
+            PIL.Image: Изображение с фрактальным паттерном
         """
-        # Создаем изображение
-        pattern = Image.new('RGB', (width, height), 'white')
-        draw = ImageDraw.Draw(pattern)
+        pattern = np.zeros((height, width, 3), dtype=np.uint8)
         
-        # Генерируем случайные точки
-        num_dots = (width * height) // (dot_size * dot_size * 4)
+        # Параметры фрактала Мандельброта
+        xmin, xmax = -2.0, 1.0
+        ymin, ymax = -1.5, 1.5
         
-        for _ in range(num_dots):
-            x = random.randint(0, width - dot_size)
-            y = random.randint(0, height - dot_size)
+        for y in range(height):
+            for x in range(width):
+                # Преобразуем координаты пикселя в комплексную плоскость
+                c = complex(xmin + (xmax - xmin) * x / width,
+                          ymin + (ymax - ymin) * y / height)
+                
+                z = 0
+                iteration_count = 0
+                for iteration_count in range(iterations):
+                    if abs(z) > 2:
+                        break
+                    z = z * z + c
+                
+                # Используем количество итераций для выбора цвета
+                color_index = iteration_count % len(colors)
+                pattern[y, x] = colors[color_index]
+        
+        return Image.fromarray(pattern)
+    
+    def create_noise_pattern(self, width, height, colors, noise_intensity=0.3):
+        """
+        Создает шумовой паттерн с цветами из исходного изображения
+        
+        Args:
+            width: Ширина паттерна
+            height: Высота паттерна
+            colors: Список цветов для использования
+            noise_intensity: Интенсивность шума
             
-            # Случайный цвет точки
-            color = (
-                random.randint(0, 255),
-                random.randint(0, 255),
-                random.randint(0, 255)
-            )
-            
-            # Рисуем точку
-            draw.ellipse(
-                [x, y, x + dot_size, y + dot_size],
-                fill=color
-            )
+        Returns:
+            PIL.Image: Изображение с шумовым паттерном
+        """
+        pattern = np.zeros((height, width, 3), dtype=np.uint8)
         
-        return pattern
+        for y in range(height):
+            for x in range(width):
+                # Создаем многослойный шум
+                noise_value = 0
+                frequency = 1.0
+                amplitude = 1.0
+                
+                for _ in range(4):  # 4 октавы шума
+                    noise_value += amplitude * math.sin(frequency * x * 0.01) * math.cos(frequency * y * 0.01)
+                    frequency *= 2
+                    amplitude *= 0.5
+                
+                # Нормализуем и добавляем случайность
+                noise_value = (noise_value + 1) / 2  # Нормализация в [0, 1]
+                noise_value += random.random() * noise_intensity
+                
+                # Выбираем цвет на основе шума
+                color_index = int(noise_value * len(colors)) % len(colors)
+                pattern[y, x] = colors[color_index]
+        
+        return Image.fromarray(pattern)
+    
+    def create_advanced_pattern(self, width, height, source_image, dot_size=2):
+        """
+        Создает улучшенный паттерн с использованием фракталов и цветов исходного изображения
+        
+        Args:
+            width: Ширина паттерна
+            height: Высота паттерна
+            source_image: Исходное изображение для извлечения цветов
+            dot_size: Размер элементов паттерна
+            
+        Returns:
+            PIL.Image: Улучшенный паттерн
+        """
+        # Извлекаем основные цвета из исходного изображения
+        colors = self.extract_color_palette(source_image, num_colors=12)
+        
+        # Создаем фрактальную основу
+        fractal_pattern = self.create_fractal_pattern(width, height, colors[:6])
+        
+        # Добавляем шумовой слой
+        noise_pattern = self.create_noise_pattern(width, height, colors[6:], noise_intensity=0.2)
+        
+        # Смешиваем паттерны
+        fractal_array = np.array(fractal_pattern)
+        noise_array = np.array(noise_pattern)
+        
+        # Комбинируем с весами
+        combined = (fractal_array * 0.7 + noise_array * 0.3).astype(np.uint8)
+        
+        return Image.fromarray(combined)
     
     def generate_sirds(self, input_image, dot_size=2, depth_intensity=1.0, 
                        pattern_width=100, output_width=800):
@@ -92,11 +189,12 @@ class SIRDSGenerator:
         # Масштабируем входное изображение
         resized_image = input_image.resize((output_width, output_height), Image.Resampling.LANCZOS)
         
-        # Создаем карту глубины
+        # Создаем улучшенную карту глубины
         depth_map = self.image_to_depth_map(resized_image)
+        depth_map = self.enhance_depth_map(depth_map, blur_radius=1)
         
-        # Создаем случайный паттерн
-        pattern = self.create_random_pattern(pattern_width, output_height, dot_size)
+        # Создаем улучшенный паттерн на основе исходного изображения
+        pattern = self.create_advanced_pattern(pattern_width, output_height, resized_image, dot_size)
         pattern_array = np.array(pattern)
         
         # Создаем выходное изображение
@@ -105,29 +203,36 @@ class SIRDSGenerator:
         # Заполняем начальный паттерн
         sirds[:, :pattern_width] = pattern_array
         
-        # Генерируем SIRDS
+        # Генерируем SIRDS с улучшенным алгоритмом
         for x in range(pattern_width, output_width):
             for y in range(output_height):
                 # Получаем значение глубины (нормализованное)
                 depth_value = depth_map[y, x] / 255.0
                 
-                # Вычисляем смещение на основе глубины
-                # Чем больше глубина, тем больше смещение
-                shift = int(depth_value * depth_intensity * 20)
+                # Улучшенное вычисление смещения для лучшего 3D эффекта
+                base_shift = depth_value * depth_intensity * 30
+                
+                # Добавляем нелинейность для более выразительного эффекта
+                nonlinear_factor = depth_value ** 1.5
+                shift = int(base_shift * nonlinear_factor)
                 
                 # Ограничиваем смещение
-                shift = max(0, min(shift, pattern_width - 1))
+                max_shift = min(pattern_width // 2, 40)
+                shift = max(-max_shift, min(shift, max_shift))
                 
-                # Копируем пиксель со смещением
-                source_x = x - pattern_width + shift
-                if source_x >= 0:
+                # Вычисляем исходную позицию с учетом смещения
+                source_x = x - pattern_width - shift
+                
+                if source_x >= 0 and source_x < output_width:
                     sirds[y, x] = sirds[y, source_x]
                 else:
-                    # Если смещение выходит за границы, используем паттерн
-                    sirds[y, x] = pattern_array[y, (x - shift) % pattern_width]
+                    # Используем паттерн с модификацией для лучшего качества
+                    pattern_x = (x - shift) % pattern_width
+                    sirds[y, x] = pattern_array[y, pattern_x]
         
-        # Преобразуем обратно в PIL Image
+        # Применяем легкое размытие для сглаживания артефактов
         sirds_image = Image.fromarray(sirds)
+        sirds_image = sirds_image.filter(ImageFilter.GaussianBlur(radius=0.5))
         
         return sirds_image
     
@@ -181,6 +286,7 @@ class SIRDSGenerator:
         except:
             # Если не получается, используем стандартный
             try:
+                from PIL import ImageFont
                 font = ImageFont.load_default()
             except:
                 font = None

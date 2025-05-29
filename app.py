@@ -80,7 +80,7 @@ with col1:
     if uploaded_file is not None:
         # Показываем превью загруженного изображения
         image = Image.open(uploaded_file)
-        st.image(image, caption="Исходное изображение", use_column_width=True)
+        st.image(image, caption="Исходное изображение", use_container_width=True)
         
         # Информация об изображении
         st.info(f"Размер: {image.size[0]}x{image.size[1]} пикселей")
@@ -104,8 +104,12 @@ with col2:
                     output_width=output_width
                 )
                 
-                # Показываем результат
-                st.image(sirds_image, caption="SIRDS Стереограмма", use_column_width=True)
+                # Показываем результат с возможностью открыть на весь экран
+                st.image(sirds_image, caption="SIRDS Стереограмма", use_container_width=True)
+                
+                # Кнопка для просмотра в полноэкранном режиме
+                if st.button("🔍 Открыть в полном размере", use_container_width=True):
+                    st.image(sirds_image, caption="SIRDS Стереограмма - Полный размер")
                 
                 # Кнопка для скачивания
                 buf = io.BytesIO()
