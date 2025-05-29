@@ -322,13 +322,15 @@ class SIRDSGenerator:
         
         return Image.fromarray(combined)
     
-    def create_layered_depth(self, depth_map, intensity=1.0):
+    def create_layered_depth(self, depth_map, intensity=1.0, edge_enhancement=1.5, background_depth=0.2):
         """
         Создает слоистую карту глубины для четкого восприятия объектов
         
         Args:
             depth_map: numpy массив с картой глубины
             intensity: Интенсивность эффекта
+            edge_enhancement: Усиление контуров
+            background_depth: Глубина фона
             
         Returns:
             numpy.ndarray: Оптимизированная карта глубины
@@ -336,10 +338,10 @@ class SIRDSGenerator:
         # Создаем дискретные слои глубины вместо плавных переходов
         normalized = depth_map / 255.0
         
-        # Определяем уровни глубины
-        background_level = 0.2 * intensity    # Фон
-        object_level = 0.7 * intensity        # Объекты
-        edge_level = 1.0 * intensity          # Контуры
+        # Определяем уровни глубины с настраиваемыми параметрами
+        background_level = background_depth * intensity    # Фон
+        object_level = 0.7 * intensity                     # Объекты
+        edge_level = min(1.0, edge_enhancement) * intensity # Контуры
         
         # Создаем слоистую структуру
         layered = np.zeros_like(normalized)
@@ -354,7 +356,7 @@ class SIRDSGenerator:
         
         # Находим границы между слоями
         layer_diff = np.abs(np.diff(layered, axis=1))
-        boundary_mask = np.zeros_like(layered)
+        boundary_mask = np.zeros_like(layered, dtype=bool)
         boundary_mask[:, :-1] = layer_diff > 0.1
         boundary_mask[:, 1:] = np.maximum(boundary_mask[:, 1:], layer_diff > 0.1)
         
@@ -365,7 +367,7 @@ class SIRDSGenerator:
         return (layered * 255).astype(np.uint8)
 
     def generate_sirds(self, input_image, dot_size=2, depth_intensity=1.0, 
-                       pattern_width=100, output_width=800):
+                       pattern_width=100, output_width=800, edge_enhancement=1.5, background_depth=0.2):
         """
         Генерирует SIRDS стереограмму из входного изображения с оптимизированным распознаванием формы
         
@@ -388,7 +390,7 @@ class SIRDSGenerator:
         
         # Создаем оптимизированную карту глубины для стереограмм
         depth_map = self.image_to_depth_map(resized_image)
-        depth_map = self.create_layered_depth(depth_map, depth_intensity)
+        depth_map = self.create_layered_depth(depth_map, depth_intensity, edge_enhancement, background_depth)
         
         # Создаем улучшенный паттерн на основе исходного изображения
         pattern = self.create_advanced_pattern(pattern_width, output_height, resized_image, dot_size)
@@ -436,12 +438,16 @@ class SIRDSGenerator:
                         same[right] = left
                     elif same[left] != left and same[right] == right:
                         # Левая точка уже связана, связываем правую с ней
-                        same[right] = same[left]
-                        same[same[left]] = right
+                        target = same[left]
+                        if 0 <= target < output_width:
+                            same[right] = target
+                            same[target] = right
                     elif same[left] == left and same[right] != right:
                         # Правая точка уже связана, связываем левую с ней
-                        same[left] = same[right]
-                        same[same[right]] = left
+                        target = same[right]
+                        if 0 <= target < output_width:
+                            same[left] = target
+                            same[target] = left
             
             # Раскрашиваем пиксели на основе связей
             color = np.zeros((output_width, 3), dtype=np.uint8)

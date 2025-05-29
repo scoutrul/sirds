@@ -54,7 +54,7 @@ pattern_width = st.sidebar.slider(
     "Ширина паттерна",
     min_value=50,
     max_value=200,
-    value=100,
+    value=120,
     help="Ширина повторяющегося паттерна в пикселях"
 )
 
@@ -63,6 +63,27 @@ output_width = st.sidebar.selectbox(
     [400, 600, 800, 1000, 1200],
     index=2,
     help="Ширина финальной стереограммы"
+)
+
+# Дополнительные настройки для лучшего качества
+st.sidebar.markdown("### 🎨 Дополнительные настройки")
+
+edge_enhancement = st.sidebar.slider(
+    "Усиление контуров",
+    min_value=0.5,
+    max_value=3.0,
+    value=1.5,
+    step=0.1,
+    help="Насколько сильно выделять контуры объектов"
+)
+
+background_depth = st.sidebar.slider(
+    "Глубина фона",
+    min_value=0.1,
+    max_value=0.5,
+    value=0.2,
+    step=0.05,
+    help="Глубина фона относительно объектов"
 )
 
 # Основная область
@@ -98,13 +119,15 @@ with col2:
                 # Создаем генератор SIRDS
                 generator = SIRDSGenerator()
                 
-                # Генерируем стереограмму
+                # Генерируем стереограмму с дополнительными параметрами
                 sirds_image = generator.generate_sirds(
                     image,
                     dot_size=dot_size,
                     depth_intensity=depth_intensity,
                     pattern_width=pattern_width,
-                    output_width=output_width
+                    output_width=output_width,
+                    edge_enhancement=edge_enhancement,
+                    background_depth=background_depth
                 )
                 
                 # Показываем результат с возможностью открыть на весь экран
