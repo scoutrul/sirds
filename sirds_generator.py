@@ -34,9 +34,67 @@ class SIRDSGenerator:
         
         return edges
     
+    def create_object_mask(self, image):
+        """
+        Создает маску объектов, отделяя их от фона
+        
+        Args:
+            image: PIL Image объект
+            
+        Returns:
+            numpy.ndarray: Бинарная маска объектов
+        """
+        # Конвертируем в градации серого
+        grayscale = image.convert('L')
+        grayscale_array = np.array(grayscale)
+        
+        # Применяем пороговую обработку для отделения объектов от фона
+        # Автоматически определяем порог по методу Отсу
+        from scipy import ndimage
+        
+        # Вычисляем гистограмму
+        hist, bins = np.histogram(grayscale_array.flatten(), bins=256, range=(0, 256))
+        
+        # Находим оптимальный порог (упрощенный метод Отсу)
+        total_pixels = grayscale_array.size
+        sum_total = np.sum(bins[:-1] * hist)
+        
+        sum_background = 0
+        weight_background = 0
+        max_variance = 0
+        threshold = 0
+        
+        for i in range(256):
+            weight_background += hist[i]
+            if weight_background == 0:
+                continue
+                
+            weight_foreground = total_pixels - weight_background
+            if weight_foreground == 0:
+                break
+                
+            sum_background += i * hist[i]
+            mean_background = sum_background / weight_background
+            mean_foreground = (sum_total - sum_background) / weight_foreground
+            
+            variance = weight_background * weight_foreground * (mean_background - mean_foreground) ** 2
+            
+            if variance > max_variance:
+                max_variance = variance
+                threshold = i
+        
+        # Создаем бинарную маску
+        object_mask = grayscale_array < threshold  # Темные области = объекты
+        
+        # Очищаем маску от шума
+        object_mask = ndimage.binary_opening(object_mask, structure=np.ones((3, 3)))
+        object_mask = ndimage.binary_closing(object_mask, structure=np.ones((5, 5)))
+        
+        return object_mask.astype(np.uint8)
+    
     def create_depth_from_structure(self, image):
         """
-        Создает карту глубины на основе структуры изображения
+        Создает карту глубины с четким разделением объектов и фона
         
         Args:
             image: PIL Image объект
@@ -44,22 +102,40 @@ class SIRDSGenerator:
         Returns:
             numpy.ndarray: Улучшенная карта глубины
         """
-        # Получаем контуры
+        # Получаем маску объектов
+        object_mask = self.create_object_mask(image)
+        
+        # Получаем контуры для усиления границ
         edges = self.detect_edges(image)
         edges_array = np.array(edges)
         
-        # Конвертируем в градации серого
-        grayscale = image.convert('L')
-        grayscale_array = np.array(grayscale)
-        
         # Создаем базовую карту глубины
-        depth_map = 255 - grayscale_array
+        height, width = object_mask.shape
+        depth_map = np.zeros((height, width), dtype=np.float32)
         
-        # Усиливаем области с контурами
-        edge_mask = edges_array > 50
-        depth_map[edge_mask] = np.maximum(depth_map[edge_mask], 200)
+        # Фон остается на заднем плане (низкие значения глубины)
+        depth_map[object_mask == 0] = 50  # Фон
         
-        return depth_map
+        # Объекты выступают вперед (высокие значения глубины)
+        depth_map[object_mask == 1] = 200  # Объекты
+        
+        # Усиливаем контуры объектов
+        edge_mask = edges_array > 100
+        depth_map[edge_mask & (object_mask == 1)] = 255  # Контуры объектов
+        
+        # Применяем легкое размытие для плавных переходов только на границах
+        from scipy import ndimage
+        
+        # Создаем маску границ между объектами и фоном
+        dilated = ndimage.binary_dilation(object_mask, structure=np.ones((5, 5)))
+        eroded = ndimage.binary_erosion(object_mask, structure=np.ones((5, 5)))
+        boundary_mask = dilated.astype(int) - eroded.astype(int)
+        
+        # Применяем размытие только к границам
+        blurred = ndimage.gaussian_filter(depth_map, sigma=2)
+        depth_map[boundary_mask == 1] = blurred[boundary_mask == 1]
+        
+        return depth_map.astype(np.uint8)
     
     def apply_morphological_operations(self, depth_map):
         """
@@ -246,9 +322,9 @@ class SIRDSGenerator:
         
         return Image.fromarray(combined)
     
-    def optimize_depth_for_stereogram(self, depth_map, intensity=1.0):
+    def create_layered_depth(self, depth_map, intensity=1.0):
         """
-        Оптимизирует карту глубины специально для стереограмм
+        Создает слоистую карту глубины для четкого восприятия объектов
         
         Args:
             depth_map: numpy массив с картой глубины
@@ -257,24 +333,36 @@ class SIRDSGenerator:
         Returns:
             numpy.ndarray: Оптимизированная карта глубины
         """
-        # Применяем сигмоидальную функцию для улучшения контраста
+        # Создаем дискретные слои глубины вместо плавных переходов
         normalized = depth_map / 255.0
         
-        # Сигмоидальное преобразование для усиления средних тонов
-        sigmoid = 1 / (1 + np.exp(-10 * (normalized - 0.5)))
+        # Определяем уровни глубины
+        background_level = 0.2 * intensity    # Фон
+        object_level = 0.7 * intensity        # Объекты
+        edge_level = 1.0 * intensity          # Контуры
         
-        # Применяем градиентное сглаживание для плавных переходов
+        # Создаем слоистую структуру
+        layered = np.zeros_like(normalized)
+        
+        # Назначаем уровни на основе исходных значений
+        layered[normalized < 0.3] = background_level    # Фон
+        layered[(normalized >= 0.3) & (normalized < 0.8)] = object_level  # Объекты
+        layered[normalized >= 0.8] = edge_level         # Контуры
+        
+        # Применяем минимальное сглаживание только на границах слоев
         from scipy import ndimage
-        gradient_x = ndimage.sobel(sigmoid, axis=1)
-        gradient_y = ndimage.sobel(sigmoid, axis=0)
-        gradient_magnitude = np.sqrt(gradient_x**2 + gradient_y**2)
         
-        # Уменьшаем резкие градиенты для лучшего восприятия
-        smooth_factor = 1 - np.tanh(gradient_magnitude * 5)
-        smoothed = sigmoid * smooth_factor + ndimage.gaussian_filter(sigmoid, sigma=1) * (1 - smooth_factor)
+        # Находим границы между слоями
+        layer_diff = np.abs(np.diff(layered, axis=1))
+        boundary_mask = np.zeros_like(layered)
+        boundary_mask[:, :-1] = layer_diff > 0.1
+        boundary_mask[:, 1:] = np.maximum(boundary_mask[:, 1:], layer_diff > 0.1)
         
-        # Возвращаем в диапазон 0-255
-        return (smoothed * 255 * intensity).astype(np.uint8)
+        # Применяем легкое размытие только к границам
+        blurred = ndimage.gaussian_filter(layered, sigma=0.5)
+        layered[boundary_mask] = blurred[boundary_mask]
+        
+        return (layered * 255).astype(np.uint8)
 
     def generate_sirds(self, input_image, dot_size=2, depth_intensity=1.0, 
                        pattern_width=100, output_width=800):
@@ -300,7 +388,7 @@ class SIRDSGenerator:
         
         # Создаем оптимизированную карту глубины для стереограмм
         depth_map = self.image_to_depth_map(resized_image)
-        depth_map = self.optimize_depth_for_stereogram(depth_map, depth_intensity)
+        depth_map = self.create_layered_depth(depth_map, depth_intensity)
         
         # Создаем улучшенный паттерн на основе исходного изображения
         pattern = self.create_advanced_pattern(pattern_width, output_height, resized_image, dot_size)
@@ -316,25 +404,64 @@ class SIRDSGenerator:
         max_depth = 40  # Максимальное смещение в пикселях
         eye_separation = 64  # Расстояние между глазами в пикселях
         
-        # Генерируем SIRDS с классическим алгоритмом
-        for x in range(pattern_width, output_width):
-            for y in range(output_height):
+        # Создаем массив смещений для каждого столбца
+        same = np.zeros(output_width, dtype=int)
+        for i in range(output_width):
+            same[i] = i
+        
+        # Генерируем SIRDS с правильным алгоритмом связывания
+        for y in range(output_height):
+            # Сбрасываем массив связей для каждой строки
+            for i in range(output_width):
+                same[i] = i
+            
+            # Проходим по всем пикселям в строке
+            for x in range(output_width):
                 # Получаем значение глубины
                 depth_value = depth_map[y, x] / 255.0
                 
-                # Вычисляем смещение на основе глубины
-                # Используем формулу стереографического смещения
-                disparity = int(depth_value * max_depth)
+                # Вычисляем стереографическое смещение
+                separation = int(depth_value * max_depth * 2)  # Удваиваем для лучшего эффекта
                 
-                # Определяем источник пикселя
-                source_x = x - pattern_width + disparity
+                # Вычисляем левую и правую точки
+                left = x - separation // 2
+                right = x + separation // 2
                 
-                if source_x >= 0 and source_x < x:
-                    sirds[y, x] = sirds[y, source_x]
-                else:
-                    # Используем базовый паттерн
+                # Проверяем границы
+                if left >= 0 and right < output_width:
+                    # Связываем точки
+                    if same[left] == left and same[right] == right:
+                        # Обе точки свободны - связываем их
+                        same[left] = right
+                        same[right] = left
+                    elif same[left] != left and same[right] == right:
+                        # Левая точка уже связана, связываем правую с ней
+                        same[right] = same[left]
+                        same[same[left]] = right
+                    elif same[left] == left and same[right] != right:
+                        # Правая точка уже связана, связываем левую с ней
+                        same[left] = same[right]
+                        same[same[right]] = left
+            
+            # Раскрашиваем пиксели на основе связей
+            color = np.zeros((output_width, 3), dtype=np.uint8)
+            
+            for x in range(output_width):
+                if same[x] == x:
+                    # Свободная точка - берем цвет из паттерна
                     pattern_x = x % pattern_width
-                    sirds[y, x] = pattern_array[y, pattern_x]
+                    color[x] = pattern_array[y, pattern_x]
+                else:
+                    # Связанная точка - копируем цвет от связанной точки
+                    if same[x] < x:
+                        color[x] = color[same[x]]
+                    else:
+                        # Если связь указывает вправо, берем из паттерна
+                        pattern_x = x % pattern_width
+                        color[x] = pattern_array[y, pattern_x]
+            
+            # Копируем строку в результат
+            sirds[y] = color
         
         # Создаем финальное изображение без дополнительного размытия
         sirds_image = Image.fromarray(sirds)
